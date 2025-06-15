@@ -3,21 +3,34 @@ import os
 import sys
 import argparse
 import re
+import json # Import the json module
+
+# Declare global variables at the top of the module scope.
+# This ensures that any assignment to these variables throughout the script
+# (including the initial False values and later from argparse)
+# correctly modifies the global variable.
+global _verbose, _ignore_binaries, _output_json
 
 _verbose = False
-_ignore_binaries = False # New global flag
+_ignore_binaries = False
+_output_json = False # New global flag for JSON output
 
 def _log_message(message, level='normal'):
     """
     Internal logging function for the script.
     Only prints messages if verbose is enabled or if it's an error/warning.
+    When JSON output is enabled, regular and debug messages are suppressed
+    to keep stdout clean for JSON, but errors/warnings still go to stderr.
     """
     if level == 'error':
         sys.stderr.write(f"Error: {message}\n")
     elif level == 'warning':
         sys.stderr.write(f"Warning: {message}\n")
-    elif _verbose:
+    elif _verbose and not _output_json: # Only print verbose messages if not outputting JSON
         sys.stdout.write(f"{message}\n")
+    elif not _output_json and level == 'info': # Info messages only if not outputting JSON
+        sys.stdout.write(f"{message}\n")
+
 
 def _execute_git_command(command_parts, cwd):
     """
@@ -38,7 +51,7 @@ def _execute_git_command(command_parts, cwd):
             check=False
         )
 
-        if result.stdout and _verbose:
+        if result.stdout and _verbose and not _output_json: # Only log stdout if verbose and not JSON
             _log_message(f"  Git STDOUT: {result.stdout.strip()}", level='debug')
         if result.stderr:
             _log_message(f"  Git STDERR: {result.stderr.strip()}", level='debug')
@@ -63,47 +76,10 @@ def _execute_git_command(command_parts, cwd):
 def _is_binary_file(file_path, repo_path):
     """
     Checks if a file is considered binary by Git.
-    This is done by attempting a diff-files command and checking its output.
     Returns True if binary, False otherwise.
     """
-    # Use git diff-files --name-only --diff-filter=X where X excludes text changes
-    # A common way to check if Git considers it binary is to try `git diff --numstat`
-    # and see if it reports binary differences. Or `git diff --textconv` would fail for binaries.
-    # A simpler approach is to check if `git diff` itself says "Binary files ... differ".
-    # However, for untracked files, we can't use `git diff` directly in the same way.
-
-    # A more robust way to check if Git treats a file as binary without doing a full diff
-    # is to try `git diff-index --binary-summary <commit> -- <file>`.
-    # But for untracked or working tree files, it's less straightforward.
-    # Let's try `git diff --numstat` as a general approach.
-
     _log_message(f"Checking if '{file_path}' is binary...", level='debug')
     
-    # For staged/unstaged: Check against HEAD or index
-    # For untracked: Use --no-index
-    
-    # The 'git diff' output itself contains "Binary files ... differ"
-    # We will run a specific diff command and look for this phrase.
-    
-    # We need to decide which diff command to run based on status
-    # For simplicity, we'll try a generic diff that would typically show this message.
-    # If a file is untracked, 'git diff --no-index /dev/null <file>' will work.
-    # For tracked files, 'git diff HEAD -- <file>' will work.
-
-    # Let's perform a lightweight diff and grep for the binary message.
-    # This might be slightly less efficient as it runs another git command,
-    # but it's reliable for determining Git's view on the file.
-    
-    # Use a simpler approach: 'git diff HEAD -- <file>' for tracked
-    # and 'git diff --no-index /dev/null <file>' for untracked.
-    # Then check if the output contains "Binary files ... differ".
-
-    # Let's try `git check-attr binary -- <file>` first, which is cleaner if supported.
-    # However, that relies on .gitattributes. A more direct check is often desired.
-
-    # Reverting to checking the actual diff output for the "Binary files differ" line.
-    # This covers both explicit binary files and those inferred by Git.
-
     temp_diff_output, success = _execute_git_command(['diff', 'HEAD', '--', file_path], cwd=repo_path)
     if not success and 'unknown revision or path not in the working tree' in temp_diff_output:
         # If it's not a tracked file (e.g., untracked), try --no-index
@@ -116,12 +92,53 @@ def _is_binary_file(file_path, repo_path):
     _log_message(f"'{file_path}' not identified as binary.", level='debug')
     return False
 
+def _split_diff_into_hunks(diff_content):
+    """
+    Splits a full Git diff string into an array of blocks,
+    where each block is either the initial header or a diff hunk.
+    """
+    if not diff_content:
+        return []
+
+    lines = diff_content.splitlines()
+    hunk_blocks = []
+    current_block_lines = []
+    
+    # Flag to detect if we've passed the initial header (diff --git, index, ---, +++)
+    # and are now looking for hunk headers (@@)
+    in_hunk_section = False 
+
+    for line in lines:
+        # Check for start of a new file diff or a new hunk
+        if line.startswith('diff --git '):
+            # If we've accumulated lines for a previous block, add it
+            if current_block_lines:
+                hunk_blocks.append('\n'.join(current_block_lines))
+            current_block_lines = [line]
+            in_hunk_section = False # Reset for new file header
+        elif line.startswith('@@ '):
+            # If we've accumulated lines for a previous block (header or hunk), add it
+            if current_block_lines:
+                hunk_blocks.append('\n'.join(current_block_lines))
+            current_block_lines = [line]
+            in_hunk_section = True
+        else:
+            current_block_lines.append(line)
+    
+    # Add the last accumulated block if any
+    if current_block_lines:
+        hunk_blocks.append('\n'.join(current_block_lines))
+
+    return hunk_blocks
+
 
 def run_diff_logic(repo_path, file_extensions=None):
     """
     Displays the differences for all changed files (staged, unstaged, and untracked)
     in the specified Git repository, optionally filtered by file extensions,
     and organized by file. Can also ignore binary files.
+    
+    If _output_json is True, prints a JSON object; otherwise, prints human-readable diffs.
     
     Args:
         repo_path (str): The path to the Git repository.
@@ -161,10 +178,13 @@ def run_diff_logic(repo_path, file_extensions=None):
         changed_files_info.append({'status': status_code, 'path': file_path})
 
     if not changed_files_info:
-        print("No changes detected.")
+        if not _output_json:
+            print("No changes detected.")
+        else:
+            print(json.dumps([])) # Print empty JSON array if no changes
         return 0
 
-    all_file_diffs = {}
+    all_file_diffs = {} # Dictionary to store diffs for JSON output
 
     for file_info in changed_files_info:
         fpath = file_info['path']
@@ -213,7 +233,7 @@ def run_diff_logic(repo_path, file_extensions=None):
                             dir_had_content_diff = True
                         elif not success_diff_sub:
                             _log_message(f"Could not get diff for untracked file {sub_file_path_relative}. Skipping.", level='warning')
-                if not dir_had_content_diff and _verbose:
+                if not dir_had_content_diff and _verbose and not _output_json:
                      _log_message(f"(No untracked files with content found in {fpath})", level='info')
                 _log_message(f"----- End Untracked Directory: {fpath} -----", level='info')
             else:
@@ -237,23 +257,50 @@ def run_diff_logic(repo_path, file_extensions=None):
                 _log_message(f"Could not get diff for {fpath}. Skipping.", level='warning')
 
     if not all_file_diffs:
-        if file_extensions:
-            print(f"No changes detected or all changed files were filtered by extensions: {', '.join(file_extensions)}")
-        elif _ignore_binaries:
-            print("No changes detected or all changed files were binary and ignored.")
+        if not _output_json:
+            if file_extensions:
+                print(f"No changes detected or all changed files were filtered by extensions: {', '.join(file_extensions)}")
+            elif _ignore_binaries:
+                print("No changes detected or all changed files were binary and ignored.")
+            else:
+                print("No changes detected.")
         else:
-            print("No changes detected.")
+            print(json.dumps([])) # Print empty JSON array
     else:
-        sorted_files = sorted(all_file_diffs.keys())
+        if _output_json:
+            # Prepare the list of dictionaries for JSON output
+            json_output_data = []
+            for fpath in sorted(all_file_diffs.keys()): # Sort for consistent output
+                diff_info = all_file_diffs[fpath]
+                filename_base, ext = os.path.splitext(fpath) # Get filename base and extension
+                
+                # Get the full raw diff text
+                full_raw_diff_text = diff_info['diff']
+                
+                # Split the full diff into an array of hunk blocks
+                diff_hunk_blocks = _split_diff_into_hunks(full_raw_diff_text)
 
-        for fpath in sorted_files:
-            diff_info = all_file_diffs[fpath]
-            status_display = diff_info['status']
-            diff_content = diff_info['diff']
+                json_output_data.append({
+                    "filename": fpath, # Use full path as filename
+                    "ext": ext,
+                    "all_diffs_as_text": full_raw_diff_text, # Full diff as single string
+                    "diff_blocks": diff_hunk_blocks # Diff split into an array of hunk strings
+                })
             
-            print(f"\n--- {fpath} ({status_display}) ---")
-            print(diff_content)
-            print("-----")
+            # Print the JSON array to stdout
+            print(json.dumps(json_output_data, indent=2))
+        else:
+            # Existing human-readable output
+            sorted_files = sorted(all_file_diffs.keys())
+
+            for fpath in sorted_files:
+                diff_info = all_file_diffs[fpath]
+                status_display = diff_info['status']
+                diff_content = diff_info['diff']
+                
+                print(f"\n--- {fpath} ({status_display}) ---")
+                print(diff_content)
+                print("-----")
 
         _log_message(f"--- Diff analysis completed for {repo_path} ---", level='info')
 
@@ -282,11 +329,27 @@ if __name__ == "__main__":
         action="store_true",
         help="Do not display diffs for binary files."
     )
+    parser.add_argument(
+        "-j", "--json",
+        action="store_true",
+        help="Output the diffs in JSON format."
+    )
 
     args = parser.parse_args()
 
+    # The 'global' keyword must be used within a function to indicate that
+    # assignments to variables should modify the global variable rather than
+    # creating a new local one. When used at the module level (like here),
+    # variables are already global by default, so 'global' is not strictly
+    # necessary *for declaration*, but it doesn't hurt.
+    # The crucial part for your error was that any assignment *before*
+    # `global` in a function (or the __main__ block acting like one)
+    # would make it local. By putting it at the very top, all subsequent
+    # uses and assignments refer to the intended global variables.
+    
     _verbose = args.verbose
-    _ignore_binaries = args.ignore_binaries # Set the new global flag
+    _ignore_binaries = args.ignore_binaries
+    _output_json = args.json # Set the new global flag
 
     normalized_extensions = None
     if args.extensions:
