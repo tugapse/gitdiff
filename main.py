@@ -3,17 +3,13 @@ import os
 import sys
 import argparse
 import re
-import json # Import the json module
+import json 
 
-# Declare global variables at the top of the module scope.
-# This ensures that any assignment to these variables throughout the script
-# (including the initial False values and later from argparse)
-# correctly modifies the global variable.
 global _verbose, _ignore_binaries, _output_json
 
 _verbose = False
 _ignore_binaries = False
-_output_json = False # New global flag for JSON output
+_output_json = False 
 
 def _log_message(message, level='normal'):
     """
@@ -337,19 +333,10 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    # The 'global' keyword must be used within a function to indicate that
-    # assignments to variables should modify the global variable rather than
-    # creating a new local one. When used at the module level (like here),
-    # variables are already global by default, so 'global' is not strictly
-    # necessary *for declaration*, but it doesn't hurt.
-    # The crucial part for your error was that any assignment *before*
-    # `global` in a function (or the __main__ block acting like one)
-    # would make it local. By putting it at the very top, all subsequent
-    # uses and assignments refer to the intended global variables.
     
     _verbose = args.verbose
     _ignore_binaries = args.ignore_binaries
-    _output_json = args.json # Set the new global flag
+    _output_json = args.json 
 
     normalized_extensions = None
     if args.extensions:
