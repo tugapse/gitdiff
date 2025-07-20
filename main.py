@@ -402,7 +402,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "-f",
         "--file",
-        help="Filter for filename",
+        help="Filter by filename",
     )
     parser.add_argument(
         "-e",
