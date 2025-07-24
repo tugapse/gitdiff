@@ -186,9 +186,9 @@ def create_json_output_data(all_file_diffs) -> list:
 
 
 def check_and_handle_untracked_change(
-    status, normalized_repo_path, fpath, file_extensions, all_file_diffs
+    status, normalized_repo_path, fpath, file_extensions, all_file_diffs, allow_all_changes=False
 ) -> None:
-
+    cached_files = "" if allow_all_changes else "--cached" 
     if status == "??":
         full_path = os.path.join(normalized_repo_path, fpath)
         if os.path.isdir(full_path):
@@ -220,7 +220,7 @@ def check_and_handle_untracked_change(
                         continue
 
                     stdout_diff_sub, success_diff_sub = _execute_git_command(
-                        ["diff", "--no-index", "/dev/null", sub_file_path_relative],
+                        ["diff", "--no-index", "/dev/null",cached_files, sub_file_path_relative],
                         cwd=normalized_repo_path,
                     )
                     if success_diff_sub and stdout_diff_sub.strip():
@@ -242,7 +242,7 @@ def check_and_handle_untracked_change(
             _log_message(f"----- End Untracked Directory: {fpath} -----", level="info")
         else:
             stdout_diff, success_diff = _execute_git_command(
-                ["diff", "--no-index", "/dev/null", fpath], cwd=normalized_repo_path
+                ["diff", "--no-index",cached_files, "/dev/null", fpath], cwd=normalized_repo_path
             )
             if success_diff and stdout_diff.strip():
                 all_file_diffs[fpath] = {
@@ -256,7 +256,7 @@ def check_and_handle_untracked_change(
                 )
     else:
         stdout_diff, success_diff = _execute_git_command(
-            ["diff", "HEAD", "--", fpath], cwd=normalized_repo_path
+            ["diff", "HEAD" ,cached_files, "--", fpath], cwd=normalized_repo_path
         )
 
         if success_diff and stdout_diff.strip():
@@ -265,7 +265,7 @@ def check_and_handle_untracked_change(
             _log_message(f"Could not get diff for {fpath}. Skipping.", level="warning")
 
 
-def run_diff_logic(repo_path, file_extensions=None, filter_filename=None):
+def run_diff_logic(repo_path, file_extensions=None, filter_filename=None, allow_all_changes = True):
     """
     Displays the differences for all changed files (staged, unstaged, and untracked)
     in the specified Git repository, optionally filtered by file extensions,
@@ -354,7 +354,7 @@ def run_diff_logic(repo_path, file_extensions=None, filter_filename=None):
             continue  # Skip this file
 
         check_and_handle_untracked_change(
-            status, normalized_repo_path, fpath, file_extensions, all_file_diffs
+            status, normalized_repo_path, fpath, file_extensions, all_file_diffs, allow_all_changes=allow_all_changes
         )
 
     if not all_file_diffs:
@@ -417,6 +417,12 @@ if __name__ == "__main__":
         help="Do not display diffs for binary files.",
     )
     parser.add_argument(
+        "-a",
+        "--allow-all-changes",
+        action="store_true",
+        help="Also display diffs for unstaged changes.",
+    )
+    parser.add_argument(
         "-j", "--json", action="store_true", help="Output the diffs in JSON format."
     )
 
@@ -434,5 +440,5 @@ if __name__ == "__main__":
                 ext = "." + ext
             normalized_extensions.append(ext.lower())
 
-    exit_code = run_diff_logic(args.repo_path, normalized_extensions, args.file)
+    exit_code = run_diff_logic(args.repo_path, normalized_extensions, args.file, args.allow_all_changes)
     sys.exit(exit_code)
