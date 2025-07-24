@@ -190,6 +190,7 @@ def check_and_handle_untracked_change(
 ) -> None:
     cached_files = "" if allow_all_changes else "--cached" 
     if status == "??":
+        if allow_all_changes == False: return
         full_path = os.path.join(normalized_repo_path, fpath)
         if os.path.isdir(full_path):
             _log_message(f"\n--- Untracked Directory: {fpath} ---", level="info")
@@ -220,7 +221,7 @@ def check_and_handle_untracked_change(
                         continue
 
                     stdout_diff_sub, success_diff_sub = _execute_git_command(
-                        ["diff", "--no-index", "/dev/null",cached_files, sub_file_path_relative],
+                        ["diff", cached_files, "--no-index", "/dev/null",  sub_file_path_relative],
                         cwd=normalized_repo_path,
                     )
                     if success_diff_sub and stdout_diff_sub.strip():
@@ -229,7 +230,7 @@ def check_and_handle_untracked_change(
                             "diff": stdout_diff_sub.strip(),
                         }
                         dir_had_content_diff = True
-                    elif not success_diff_sub:
+                    elif not success_diff_sub and _verbose:
                         _log_message(
                             f"Could not get diff for untracked file {sub_file_path_relative}. Skipping.",
                             level="warning",
